@@ -1,4 +1,4 @@
-import { LayerResult } from "./types";
+import { LayerResult, MetricsData } from "./types";
 
 const API_BASE = "http://localhost:8000";
 
@@ -62,7 +62,8 @@ export async function selectQueries(
   embeddings2d: number[][],
   triedIndices: number[],
   promisingIndices: number[],
-  k: number = 5
+  k: number = 5,
+  layers: string[] = []
 ) {
   const res = await fetch(`${API_BASE}/api/select`, {
     method: "POST",
@@ -73,8 +74,29 @@ export async function selectQueries(
       tried_indices: triedIndices,
       promising_indices: promisingIndices,
       k,
+      layers,
     }),
   });
   if (!res.ok) throw new Error(`Select failed: ${res.statusText}`);
+  return res.json();
+}
+
+export async function computeMetrics(
+  layers: string[],
+  triedIndices: number[],
+  computeIntraLayer: boolean,
+  computeDistanceToTried: boolean
+): Promise<MetricsData> {
+  const res = await fetch(`${API_BASE}/api/metrics`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      layers,
+      tried_indices: triedIndices,
+      compute_intra_layer: computeIntraLayer,
+      compute_distance_to_tried: computeDistanceToTried,
+    }),
+  });
+  if (!res.ok) throw new Error(`Metrics failed: ${res.statusText}`);
   return res.json();
 }

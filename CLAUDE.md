@@ -1,7 +1,7 @@
 # Query Selection Engine
 
 ## Project Overview
-A demo product that visualizes how the orchestrator selects diverse queries across rounds using **farthest-first traversal** on query embeddings. Built to demonstrate to Convexia's CTO (Rahul) that cosine similarity-based query selection produces maximally diverse search coverage.
+A demo product that visualizes how the orchestrator selects diverse queries across rounds using **farthest-first traversal** on query embeddings. Built to demonstrate that cosine similarity-based query selection produces maximally diverse search coverage.
 
 ## What This Product Does
 1. User inputs a biomedical target query (e.g., "CDK12 inhibitors for TNBC") and desired pool size (N)

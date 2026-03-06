@@ -27,8 +27,8 @@ export default function InputPanel({
       <h2 className="text-sm font-medium text-[#888] uppercase tracking-wider mb-4">
         Target Input
       </h2>
-      <div className="flex gap-3 items-end">
-        <div className="flex-1">
+      <div className="space-y-4">
+        <div>
           <label className="block text-xs text-[#888] mb-1.5">
             Biomedical Target Query
           </label>
@@ -37,64 +37,72 @@ export default function InputPanel({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="e.g., CDK12 inhibitors for Triple Negative Breast Cancer"
-            className="w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-4 py-2.5 text-sm text-white placeholder-[#555] focus:outline-none focus:border-[#00c277] transition-colors"
+            className="w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-4 py-3 text-base text-white placeholder-[#555] focus:outline-none focus:border-[#00c277] transition-colors"
             disabled={disabled}
           />
         </div>
-        <div className="w-40">
-          <label className="block text-xs text-[#888] mb-1.5">
-            Model
-          </label>
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            disabled={disabled}
-            className="w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-[#00c277] transition-colors appearance-none cursor-pointer"
-          >
-            {MODEL_OPTIONS.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="w-48">
-          <label className="block text-xs text-[#888] mb-1.5">
-            Pool Size
-          </label>
-          <div className="flex items-center gap-2">
-            <input
-              type="range"
-              min={20}
-              max={5000}
-              step={10}
-              value={poolSize}
-              onChange={(e) => setPoolSize(Number(e.target.value))}
-              className="flex-1 accent-[#00c277]"
-              disabled={disabled}
-            />
-            <input
-              type="number"
-              min={20}
-              max={5000}
-              step={10}
-              value={poolSize}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (v >= 20 && v <= 5000) setPoolSize(v);
-              }}
-              className="w-16 bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-sm text-white text-center font-mono focus:outline-none focus:border-[#00c277]"
-              disabled={disabled}
-            />
+        <div className="flex gap-3 items-end">
+          <div>
+            <label className="block text-xs text-[#888] mb-1.5">
+              Model
+            </label>
+            <div className="flex rounded-lg border border-[#2a2a2a] overflow-hidden">
+              {MODEL_OPTIONS.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setModel(m.id)}
+                  disabled={disabled}
+                  className={`px-4 py-2 text-sm font-medium transition-colors ${
+                    model === m.id
+                      ? "bg-[#00c277] text-[#0a0a0a]"
+                      : "bg-[#0a0a0a] text-[#888] hover:text-white"
+                  } disabled:opacity-40 disabled:cursor-not-allowed`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
           </div>
+          <div className="w-48">
+            <label className="block text-xs text-[#888] mb-1.5">
+              Pool Size
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="range"
+                min={20}
+                max={5000}
+                step={10}
+                value={poolSize}
+                onChange={(e) => setPoolSize(Number(e.target.value))}
+                className="flex-1 accent-[#00c277]"
+                disabled={disabled}
+              />
+              <input
+                type="number"
+                min={20}
+                max={5000}
+                step={10}
+                value={poolSize}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  if (v >= 20 && v <= 5000) setPoolSize(v);
+                }}
+                className="w-16 bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-sm text-white text-center font-mono focus:outline-none focus:border-[#00c277]"
+                disabled={disabled}
+              />
+            </div>
+          </div>
+          <div className="flex-1" />
+          <button
+            onClick={() => onGenerate(query, poolSize, model)}
+            disabled={!query.trim() || isLoading || disabled}
+            className="px-5 py-2.5 bg-[#00c277] text-[#0a0a0a] font-semibold text-sm rounded-lg hover:bg-[#00ff99] disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+          >
+            {isLoading ? "Generating..." : "Generate Queries"}
+          </button>
         </div>
-        <button
-          onClick={() => onGenerate(query, poolSize, model)}
-          disabled={!query.trim() || isLoading || disabled}
-          className="px-5 py-2.5 bg-[#00c277] text-[#0a0a0a] font-semibold text-sm rounded-lg hover:bg-[#00ff99] disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
-        >
-          {isLoading ? "Generating..." : "Generate Queries"}
-        </button>
       </div>
     </div>
   );

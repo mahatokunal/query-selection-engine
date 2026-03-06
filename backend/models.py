@@ -38,6 +38,7 @@ class SelectRequest(BaseModel):
     tried_indices: list[int] = []
     promising_indices: list[int] = []
     k: int = 5
+    layers: list[str] = []
 
 
 class SelectedQuery(BaseModel):
@@ -54,3 +55,15 @@ class SelectResponse(BaseModel):
     selected: list[SelectedQuery]
     exploit_count: int
     explore_count: int
+
+
+class MetricsRequest(BaseModel):
+    layers: list[str]
+    tried_indices: list[int] = []
+    compute_intra_layer: bool = False
+    compute_distance_to_tried: bool = False
+
+
+class MetricsResponse(BaseModel):
+    intra_layer_distances: dict[str, float] | None = None
+    distance_to_nearest_tried: dict[str, float] | None = None

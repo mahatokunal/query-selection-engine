@@ -42,3 +42,8 @@ export interface RoundResult {
   exploit_count: number;
   explore_count: number;
 }
+
+export interface MetricsData {
+  intra_layer_distances: Record<string, number> | null;
+  distance_to_nearest_tried: Record<string, number> | null;
+}

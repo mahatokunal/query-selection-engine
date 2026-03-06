@@ -14,9 +14,10 @@ def _get_model():
     return _model
 
 
-def embed_queries(queries: list[str]) -> list[Point2D]:
+def embed_queries(queries: list[str]) -> tuple[list[Point2D], np.ndarray]:
     model = _get_model()
     embeddings = model.encode(queries, normalize_embeddings=True)
+    embeddings = np.array(embeddings)
 
     reducer = UMAP(
         n_components=2,
@@ -25,7 +26,7 @@ def embed_queries(queries: list[str]) -> list[Point2D]:
         min_dist=0.1,
         metric="cosine",
     )
-    coords_2d = reducer.fit_transform(np.array(embeddings))
+    coords_2d = reducer.fit_transform(embeddings)
 
     points = []
     for i, query in enumerate(queries):
@@ -38,4 +39,4 @@ def embed_queries(queries: list[str]) -> list[Point2D]:
             )
         )
 
-    return points
+    return points, embeddings

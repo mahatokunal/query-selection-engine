@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import Header from "@/components/Header";
 import InputPanel from "@/components/InputPanel";
 import ExpansionLayers from "@/components/ExpansionLayers";
@@ -8,7 +8,8 @@ import QueryList from "@/components/QueryList";
 import ScatterPlot from "@/components/ScatterPlot";
 import RoundControls from "@/components/RoundControls";
 import ExplanationPanel from "@/components/ExplanationPanel";
-import { expandQueryStream, embedQueries, selectQueries } from "@/lib/api";
+import BiasMetricsPanel from "@/components/BiasMetricsPanel";
+import { expandQueryStream, embedQueries, selectQueries, computeMetrics } from "@/lib/api";
 import {
   LayerResult,
   Point2D,
@@ -38,6 +39,29 @@ export default function Home() {
   const [roundHistory, setRoundHistory] = useState<
     { round: number; selected: SelectedQuery[]; promising: number[] }[]
   >([]);
+  const [intraLayerDistances, setIntraLayerDistances] = useState<Record<string, number> | null>(null);
+  const [distanceToNearestTried, setDistanceToNearestTried] = useState<Record<string, number> | null>(null);
+
+  const layerDistribution = useMemo(() => {
+    const dist: Record<string, number> = {};
+    // Count from round history
+    for (const rh of roundHistory) {
+      for (const sel of rh.selected) {
+        const state = queryStates.find((q) => q.index === sel.index);
+        if (state) {
+          dist[state.layer] = (dist[state.layer] || 0) + 1;
+        }
+      }
+    }
+    // Count from current selection
+    for (const sel of currentSelection) {
+      const state = queryStates.find((q) => q.index === sel.index);
+      if (state) {
+        dist[state.layer] = (dist[state.layer] || 0) + 1;
+      }
+    }
+    return dist;
+  }, [roundHistory, currentSelection, queryStates]);
 
   const runSelection = useCallback(
     async (
@@ -54,7 +78,8 @@ export default function Home() {
 
       try {
         const embeddings2d = pts.map((p) => [p.x, p.y]);
-        const data = await selectQueries(queries, embeddings2d, tried, promising, 5);
+        const layerList = states.map((q) => q.layer);
+        const data = await selectQueries(queries, embeddings2d, tried, promising, 5, layerList);
         const selected: SelectedQuery[] = data.selected;
         setCurrentSelection(selected);
 
@@ -67,6 +92,15 @@ export default function Home() {
         });
         setQueryStates(newStates);
         setPhase("round");
+
+        // Compute distance-to-nearest-tried after each selection
+        const allTriedNow = [...new Set([...tried, ...selected.map((s) => s.index)])];
+        if (allTriedNow.length > 0) {
+          const layerList = states.map((q) => q.layer);
+          computeMetrics(layerList, allTriedNow, false, true)
+            .then((m) => { if (m.distance_to_nearest_tried) setDistanceToNearestTried(m.distance_to_nearest_tried); })
+            .catch(console.error);
+        }
       } catch (err) {
         console.error(err);
         alert(`Selection error: ${err instanceof Error ? err.message : "Unknown error"}`);
@@ -99,6 +133,19 @@ export default function Home() {
 
         const embedData = await embedQueries(queries);
         setPoints(embedData.points);
+
+        // Build layer list for metrics
+        const layerList: string[] = [];
+        for (const layer of expandedLayers) {
+          for (let j = 0; j < layer.queries.length; j++) {
+            layerList.push(layer.name);
+          }
+        }
+
+        // Compute intra-layer distances once after embedding
+        computeMetrics(layerList, [], true, false)
+          .then((m) => { if (m.intra_layer_distances) setIntraLayerDistances(m.intra_layer_distances); })
+          .catch(console.error);
 
         const states: QueryState[] = queries.map((q: string, i: number) => {
           let layerName = "";
@@ -210,6 +257,8 @@ export default function Home() {
     setHoveredQuery(null);
     setRequestedPoolSize(50);
     setRoundHistory([]);
+    setIntraLayerDistances(null);
+    setDistanceToNearestTried(null);
   }, []);
 
   return (
@@ -238,26 +287,41 @@ export default function Home() {
       )}
 
       {(phase === "ready" || phase === "round") && (
-        <div className="flex-1 flex flex-col overflow-hidden p-4 gap-4">
-          <div className="flex-1 flex gap-4 min-h-0">
-            <div className="w-[320px] shrink-0">
+        <div className="flex-1 flex flex-col overflow-hidden p-4 gap-3">
+          {/* Main area: left query list + right column (plot + bias strip) */}
+          <div className="flex-1 flex gap-3 min-h-0">
+            <div className="w-[260px] shrink-0">
               <QueryList
                 queries={queryStates}
                 currentRound={currentRound}
                 onHoverQuery={setHoveredQuery}
               />
             </div>
-            <div className="flex-1">
-              <ScatterPlot
-                points={points}
-                queryStates={queryStates}
-                currentSelection={currentSelection}
-                hoveredQuery={hoveredQuery}
-                currentRound={currentRound}
-              />
+            <div className="flex-1 flex flex-col gap-3 min-h-0">
+              <div className="flex-1 min-h-0">
+                <ScatterPlot
+                  points={points}
+                  queryStates={queryStates}
+                  currentSelection={currentSelection}
+                  hoveredQuery={hoveredQuery}
+                  currentRound={currentRound}
+                />
+              </div>
+              {/* Bias metrics horizontal strip below scatter plot */}
+              <div className="glass-card rounded-xl px-4 py-2.5 shrink-0">
+                <div className="flex items-start gap-6">
+                  <BiasMetricsPanel
+                    layerDistribution={layerDistribution}
+                    intraLayerDistances={intraLayerDistances}
+                    distanceToNearestTried={distanceToNearestTried}
+                    horizontal
+                  />
+                </div>
+              </div>
             </div>
           </div>
-          <div className="flex gap-4">
+          {/* Bottom: compact round controls + explanation */}
+          <div className="flex gap-3 shrink-0">
             <div className="flex-1">
               <RoundControls
                 currentRound={currentRound}
@@ -270,7 +334,7 @@ export default function Home() {
                 maxRounds={MAX_ROUNDS}
               />
             </div>
-            <div className="w-[320px] shrink-0">
+            <div className="w-[260px] shrink-0 glass-card rounded-xl p-3 overflow-y-auto max-h-[80px]">
               <ExplanationPanel
                 selectedQueries={currentSelection}
                 hoveredQuery={hoveredQuery}

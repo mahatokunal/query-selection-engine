@@ -18,10 +18,7 @@ export default function ExplanationPanel({
 
   if (!focused) {
     return (
-      <div className="glass-card rounded-xl p-4">
-        <h2 className="text-sm font-semibold text-[#aaa] uppercase tracking-wider mb-2">
-          Why Selected?
-        </h2>
+      <div>
         <p className="text-sm text-[#555]">
           Hover over a query in the list or scatter plot to see why it was
           selected
@@ -31,10 +28,7 @@ export default function ExplanationPanel({
   }
 
   return (
-    <div className="glass-card rounded-xl p-4">
-      <h2 className="text-sm font-semibold text-[#aaa] uppercase tracking-wider mb-2">
-        Why Selected?
-      </h2>
+    <div>
       <div className="space-y-2.5">
         <div className="flex items-center gap-2.5">
           <span className="text-sm font-mono font-bold text-[#00c277]">
@@ -70,3 +64,4 @@ export default function ExplanationPanel({
     </div>
   );
 }
+

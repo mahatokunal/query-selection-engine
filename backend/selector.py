@@ -18,15 +18,33 @@ def _cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
     return float(1.0 - sim)
 
 
+def _find_layer_medoid(
+    embeddings: np.ndarray, indices: list[int]
+) -> int:
+    """Find the query closest to the centroid of the given indices."""
+    layer_embs = embeddings[indices]
+    centroid = layer_embs.mean(axis=0)
+    centroid = centroid / (np.linalg.norm(centroid) + 1e-10)
+    # Cosine similarity to centroid
+    sims = layer_embs @ centroid
+    best_local = int(np.argmax(sims))
+    return indices[best_local]
+
+
 def select_queries(
     queries: list[str],
     embeddings_2d: list[list[float]],
     tried_indices: list[int],
     promising_indices: list[int],
     k: int = 5,
+    cached_embeddings: np.ndarray | None = None,
+    layers: list[str] | None = None,
 ) -> SelectResponse:
-    model = _get_model()
-    full_embeddings = model.encode(queries, normalize_embeddings=True)
+    if cached_embeddings is not None:
+        full_embeddings = cached_embeddings
+    else:
+        model = _get_model()
+        full_embeddings = model.encode(queries, normalize_embeddings=True)
 
     selected: list[SelectedQuery] = []
 
@@ -60,12 +78,45 @@ def select_queries(
     # Reference set: all tried + all already selected this round
     reference_indices = list(set(tried_indices) | set(exploit_indices))
 
-    # Farthest-first traversal on untried queries
+    # --- Round 1: medoid-per-layer seeding ---
+    is_first_round = not reference_indices
+    if is_first_round and layers:
+        # Group untried indices by layer
+        layer_groups: dict[str, list[int]] = {}
+        for idx in untried:
+            layer_name = layers[idx] if idx < len(layers) else ""
+            layer_groups.setdefault(layer_name, []).append(idx)
+
+        # Pick medoid from each layer
+        medoid_selections: list[tuple[int, str]] = []
+        for layer_name, group_indices in layer_groups.items():
+            medoid_idx = _find_layer_medoid(full_embeddings, group_indices)
+            medoid_selections.append((medoid_idx, layer_name))
+
+        # Take up to explore_count medoids
+        for medoid_idx, layer_name in medoid_selections[:explore_count]:
+            selected.append(
+                SelectedQuery(
+                    index=medoid_idx,
+                    query=queries[medoid_idx],
+                    reason=f"Layer medoid for {layer_name}: closest to layer centroid. Ensures unbiased layer coverage in round 1.",
+                    nearest_tried_index=None,
+                    nearest_tried_query=None,
+                    distance=0.0,
+                    is_exploit=False,
+                )
+            )
+            reference_indices.append(medoid_idx)
+            untried.remove(medoid_idx)
+
+        # If more explore slots remain (k > num_layers), fill with farthest-first
+        explore_count -= len(medoid_selections[:explore_count])
+
+    # --- Farthest-first traversal for remaining slots ---
     for _ in range(min(explore_count, len(untried))):
-        # If no reference points yet (first round, first pick), pick a random starting point
+        # Fallback: if still no reference (no layers provided, empty pool)
         if not reference_indices:
-            import random
-            first_idx = random.choice(untried)
+            first_idx = untried[0]
             selected.append(
                 SelectedQuery(
                     index=first_idx,
