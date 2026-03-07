@@ -8,17 +8,19 @@ const MODEL_OPTIONS = [
 ];
 
 interface InputPanelProps {
-  onGenerate: (query: string, poolSize: number, model: string) => void;
-  isLoading: boolean;
+  onParse: (query: string, poolSize: number, model: string) => void;
+  isParsing: boolean;
   disabled: boolean;
+  initialQuery?: string;
 }
 
 export default function InputPanel({
-  onGenerate,
-  isLoading,
+  onParse,
+  isParsing,
   disabled,
+  initialQuery = "",
 }: InputPanelProps) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const [poolSize, setPoolSize] = useState(50);
   const [model, setModel] = useState(MODEL_OPTIONS[0].id);
 
@@ -96,11 +98,11 @@ export default function InputPanel({
           </div>
           <div className="flex-1" />
           <button
-            onClick={() => onGenerate(query, poolSize, model)}
-            disabled={!query.trim() || isLoading || disabled}
+            onClick={() => onParse(query, poolSize, model)}
+            disabled={!query.trim() || isParsing || disabled}
             className="px-5 py-2.5 bg-[#00c277] text-[#0a0a0a] font-semibold text-sm rounded-lg hover:bg-[#00ff99] disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
           >
-            {isLoading ? "Generating..." : "Generate Queries"}
+            {isParsing ? "Parsing..." : "Parse Query"}
           </button>
         </div>
       </div>

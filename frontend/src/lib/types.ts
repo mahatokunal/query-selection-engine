@@ -3,6 +3,78 @@ export interface LayerResult {
   queries: string[];
 }
 
+// --- Structured Query types ---
+
+export const MODALITY_OPTIONS = [
+  "Small molecule",
+  "PROTAC / Degrader",
+  "Molecular glue",
+  "Antibody (mAb)",
+  "ADC (Antibody-Drug Conjugate)",
+  "Bispecific antibody",
+  "CAR-T / Cell therapy",
+  "Gene therapy / RNA",
+  "Peptide",
+  "Vaccine",
+] as const;
+
+export const STAGE_OPTIONS = [
+  "Discovery",
+  "Preclinical",
+  "IND-enabling",
+  "Phase 1",
+  "Phase 1/2",
+  "Phase 2",
+  "Phase 3",
+  "Approved / Marketed",
+] as const;
+
+export const GEOGRAPHY_OPTIONS = [
+  "Global",
+  "US",
+  "EU",
+  "China",
+  "Japan",
+] as const;
+
+export const MECHANISM_OPTIONS = [
+  "Direct inhibitor",
+  "Allosteric inhibitor",
+  "Covalent inhibitor",
+  "Degrader (PROTAC/molecular glue)",
+  "Antagonist",
+  "Agonist",
+  "Dual / multi-target",
+  "Synthetic lethal",
+] as const;
+
+export const ASSET_TYPE_OPTIONS = [
+  "Therapeutic",
+  "Diagnostic",
+  "Biomarker",
+  "Platform / Technology",
+  "Combination regimen",
+] as const;
+
+export interface StructuredQuery {
+  target: string;
+  modality: string[];
+  stage_from: string | null;
+  stage_to: string | null;
+  indication: string;
+  geography: string[];
+  mechanism: string[];
+  development_status: string;
+  asset_type: string[];
+  asset_scope: string;
+  other_constraints: string;
+}
+
+export interface ParseResponse {
+  structured: StructuredQuery;
+  warnings: string[];
+}
+
 export interface Point2D {
   query: string;
   index: number;

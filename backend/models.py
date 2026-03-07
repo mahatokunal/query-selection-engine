@@ -1,10 +1,93 @@
 from pydantic import BaseModel
 
 
+# --- Constant option lists ---
+
+MODALITY_OPTIONS = [
+    "Small molecule",
+    "PROTAC / Degrader",
+    "Molecular glue",
+    "Antibody (mAb)",
+    "ADC (Antibody-Drug Conjugate)",
+    "Bispecific antibody",
+    "CAR-T / Cell therapy",
+    "Gene therapy / RNA",
+    "Peptide",
+    "Vaccine",
+]
+
+STAGE_OPTIONS = [
+    "Discovery",
+    "Preclinical",
+    "IND-enabling",
+    "Phase 1",
+    "Phase 1/2",
+    "Phase 2",
+    "Phase 3",
+    "Approved / Marketed",
+]
+
+GEOGRAPHY_OPTIONS = [
+    "Global",
+    "US",
+    "EU",
+    "China",
+    "Japan",
+]
+
+MECHANISM_OPTIONS = [
+    "Direct inhibitor",
+    "Allosteric inhibitor",
+    "Covalent inhibitor",
+    "Degrader (PROTAC/molecular glue)",
+    "Antagonist",
+    "Agonist",
+    "Dual / multi-target",
+    "Synthetic lethal",
+]
+
+ASSET_TYPE_OPTIONS = [
+    "Therapeutic",
+    "Diagnostic",
+    "Biomarker",
+    "Platform / Technology",
+    "Combination regimen",
+]
+
+
+# --- Structured query model ---
+
+class StructuredQuery(BaseModel):
+    target: str
+    modality: list[str] = []
+    stage_from: str | None = None
+    stage_to: str | None = None
+    indication: str = ""
+    geography: list[str] = []
+    mechanism: list[str] = []
+    development_status: str = "active_only"
+    asset_type: list[str] = ["Therapeutic"]
+    asset_scope: str = "lead_per_program"
+    other_constraints: str = ""
+
+
+class ParseRequest(BaseModel):
+    raw_query: str
+    model: str = "gpt-4.1-mini"
+
+
+class ParseResponse(BaseModel):
+    structured: StructuredQuery
+    warnings: list[str] = []
+
+
+# --- Existing models ---
+
 class ExpandRequest(BaseModel):
     target_query: str
     pool_size: int = 50
     model: str = "gpt-4.1-mini"
+    structured_query: StructuredQuery | None = None
 
 
 class LayerResult(BaseModel):
@@ -39,6 +122,8 @@ class SelectRequest(BaseModel):
     promising_indices: list[int] = []
     k: int = 5
     layers: list[str] = []
+    current_round: int = 1
+    layer_selection_counts: dict[str, int] = {}
 
 
 class SelectedQuery(BaseModel):

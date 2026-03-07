@@ -1,11 +1,12 @@
 import asyncio
 import json
 import os
+import re
 import random
 
 from openai import AsyncOpenAI
 
-from models import LayerResult
+from models import LayerResult, StructuredQuery
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
 
@@ -21,13 +22,15 @@ MODALITIES = [
     "molecular glue",
 ]
 
-# Layers 1-4 use LLM. Layer 5 is deterministic cross-product.
+# Layers 1-4 use LLM.
+#  Layer 5 is deterministic cross-product.
 LLM_LAYER_PROMPTS = {
-    "Core (Deterministic)": """Generate direct search queries by combining the target, indication, and modality terms from the input.
+    "Core (Deterministic)": """Generate direct search queries by combining the target, indication, and modality terms from the structured fields provided.
 These should be straightforward, no creativity — just the obvious keyword combinations.
 Examples: "CDK12 inhibitor triple negative breast cancer", "CDK12 small molecule TNBC".""",
     "Synonyms": """Replace key scientific terms with their synonyms and alternative names.
 Use official nomenclature, gene names, protein names, and common abbreviations.
+Focus on generating target name aliases specifically.
 Return the queries AND also include a JSON field "aliases" with a list of target name aliases/synonyms you used.
 Examples: "cyclin-dependent kinase 12 inhibitor breast cancer", "CDK12 antagonist TNBC".
 Return as: {"queries": [...], "aliases": ["cyclin-dependent kinase 12", "CDK12", ...]}""",
@@ -38,13 +41,36 @@ GOOD: "CDK12 抑制剂 三阴性乳腺癌", "CDK12 阻害剤 トリプルネガ�
 BAD: "CDK12 inhibitor triple negative breast cancer" ← this is English, NEVER return this.""",
     "Controlled Random (Bounded)": """Generate creative but bounded variations exploring adjacent scientific space.
 Think: related targets, mechanisms, pathways, drug modalities.
-Stay within the therapeutic area — don't drift to unrelated diseases.
+Use the indication and mechanism from the structured context to stay within the therapeutic area — don't drift to unrelated diseases.
 Examples: "CDK12 PROTAC degrader solid tumor", "CDK12 CDK13 dual inhibitor breast".""",
 }
 
 ALLOWED_MODELS = {"gpt-4.1-mini", "gpt-5-mini-2025-08-07"}
 
 BATCH_SIZE = 25  # Max queries per LLM call — keeps output within token limits
+
+
+def _build_structured_context(sq: StructuredQuery) -> str:
+    """Convert StructuredQuery into a clean text block for LLM prompts."""
+    lines = [f"Target: {sq.target}"]
+    if sq.modality:
+        lines.append(f"Modality: {', '.join(sq.modality)}")
+    if sq.indication:
+        lines.append(f"Indication: {sq.indication}")
+    if sq.mechanism:
+        lines.append(f"Mechanism: {', '.join(sq.mechanism)}")
+    if sq.stage_from or sq.stage_to:
+        stage = f"From {sq.stage_from or 'any'} to {sq.stage_to or 'any'}"
+        lines.append(f"Stage: {stage}")
+    if sq.geography:
+        lines.append(f"Geography: {', '.join(sq.geography)}")
+    if sq.development_status != "active_only":
+        lines.append("Development Status: Include discontinued")
+    if sq.asset_type:
+        lines.append(f"Asset Type: {', '.join(sq.asset_type)}")
+    if sq.other_constraints:
+        lines.append(f"Other Constraints: {sq.other_constraints}")
+    return "\n".join(lines)
 
 
 def _parse_llm_response(content: str, count: int) -> tuple[list[str], list[str]]:
@@ -81,11 +107,14 @@ def _parse_llm_response(content: str, count: int) -> tuple[list[str], list[str]]
 
 def _generate_cross_product(aliases: list[str], indication: str, count: int) -> list[str]:
     """Generate modality × alias cross-product queries deterministically."""
+    short_indication = _shorten_indication(
+        _strip_target_from_indication(indication, aliases)
+    )
     queries: list[str] = []
     for alias in aliases:
         for modality in MODALITIES:
-            q = f"{alias} {modality} {indication}".strip()
-            queries.append(q)
+            queries.append(f"{alias} {modality} {short_indication}".strip())
+            queries.append(f"{alias} {modality}".strip())
 
     # Deduplicate while preserving order
     seen = set()
@@ -105,14 +134,93 @@ def _generate_cross_product(aliases: list[str], indication: str, count: int) -> 
     return unique
 
 
-async def expand_query(target_query: str, pool_size: int, model: str = "gpt-4.1-mini") -> list[LayerResult]:
+def _strip_target_from_indication(indication: str, targets: list[str]) -> str:
+    """Remove target names from indication to avoid redundancy like 'STXBP1 ... STXBP1'."""
+    cleaned = indication
+    for t in targets:
+        # Remove target name (case-insensitive) and clean up extra spaces
+        cleaned = re.sub(re.escape(t), "", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _shorten_indication(indication: str) -> str:
+    """Truncate indication to first 4 words to avoid dominating embeddings."""
+    words = indication.split()
+    if len(words) <= 4:
+        return indication
+    return " ".join(words[:4])
+
+
+def _generate_structured_cross_product(
+    targets: list[str],
+    modalities: list[str],
+    indication: str,
+    mechanisms: list[str],
+    count: int,
+) -> list[str]:
+    """Generate cross-product from structured fields with varied formats for embedding diversity."""
+    # Clean indication: strip target names and make a short version
+    clean_indication = _strip_target_from_indication(indication, targets)
+    short_indication = _shorten_indication(clean_indication)
+
+    queries: list[str] = []
+
+    for target in targets:
+        for modality in modalities:
+            # Format A: target + modality + short indication
+            queries.append(f"{target} {modality} {short_indication}".strip())
+            # Format B: target + modality only (no indication — more diverse embedding)
+            queries.append(f"{target} {modality}".strip())
+
+    for target in targets:
+        for mechanism in mechanisms:
+            # Format C: target + mechanism + short indication
+            queries.append(f"{target} {mechanism} {short_indication}".strip())
+            # Format D: target + mechanism only
+            queries.append(f"{target} {mechanism}".strip())
+
+    # Format E: modality + indication (no target alias — catches different embedding region)
+    for modality in modalities:
+        queries.append(f"{modality} {clean_indication}".strip())
+
+    # Format F: mechanism + indication (no target)
+    for mechanism in mechanisms:
+        queries.append(f"{mechanism} {clean_indication}".strip())
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for q in queries:
+        q_lower = q.lower()
+        if q_lower not in seen:
+            seen.add(q_lower)
+            unique.append(q)
+
+    if len(unique) > count:
+        random.seed(42)
+        unique = random.sample(unique, count)
+
+    return unique
+
+
+async def expand_query(
+    target_query: str,
+    pool_size: int,
+    model: str = "gpt-4.1-mini",
+    structured_query: StructuredQuery | None = None,
+) -> list[LayerResult]:
     layers: list[LayerResult] = []
-    async for layer in expand_query_stream(target_query, pool_size, model):
+    async for layer in expand_query_stream(target_query, pool_size, model, structured_query):
         layers.append(layer)
     return layers
 
 
-async def expand_query_stream(target_query: str, pool_size: int, model: str = "gpt-4.1-mini"):
+async def expand_query_stream(
+    target_query: str,
+    pool_size: int,
+    model: str = "gpt-4.1-mini",
+    structured_query: StructuredQuery | None = None,
+):
     """Yield LayerResult one at a time. Layers 1-4 use LLM, Layer 5 is deterministic."""
     if model not in ALLOWED_MODELS:
         model = "gpt-4.1-mini"
@@ -122,6 +230,12 @@ async def expand_query_stream(target_query: str, pool_size: int, model: str = "g
 
     collected_aliases: list[str] = []
     total_deficit = 0  # accumulates shortfall — absorbed by L4 then L5
+
+    # Build input context for LLM prompts
+    if structured_query:
+        input_context = _build_structured_context(structured_query)
+    else:
+        input_context = target_query
 
     layer_items = list(LLM_LAYER_PROMPTS.items())
 
@@ -159,7 +273,7 @@ async def expand_query_stream(target_query: str, pool_size: int, model: str = "g
                     {
                         "role": "user",
                         "content": (
-                            f"Target input: {target_query}\n\n"
+                            f"Target input:\n{input_context}\n\n"
                             f"Layer: {layer_name}\n"
                             f"Instructions: {layer_instruction}\n\n"
                             f"Generate exactly {batch_count} unique search queries.{batch_hint}\n"
@@ -225,13 +339,23 @@ async def expand_query_stream(target_query: str, pool_size: int, model: str = "g
     # Layer 5: Deterministic cross-product — absorbs any remaining L4 shortfall
     l5_count = queries_per_layer + (1 if 4 < remainder else 0) + max(0, l4_shortfall)
 
-    # Extract indication from target query (everything after the target name)
-    indication = target_query
+    if structured_query:
+        # Parse targets from structured query
+        targets = [t.strip() for t in re.split(r"[&,]", structured_query.target) if t.strip()]
+        # Merge with L2 aliases (dedup, preserve order)
+        all_targets = list(dict.fromkeys(targets + collected_aliases))
+        # Use structured modality and indication
+        modalities = structured_query.modality if structured_query.modality else MODALITIES
+        indication = structured_query.indication
+        mechanisms = structured_query.mechanism if structured_query.mechanism else []
+        cross_queries = _generate_structured_cross_product(
+            all_targets, modalities, indication, mechanisms, l5_count
+        )
+    else:
+        # Fallback: original behavior
+        indication = target_query
+        if not collected_aliases:
+            collected_aliases = [target_query.split(" for ")[0].split(" in ")[0].strip()]
+        cross_queries = _generate_cross_product(collected_aliases, indication, l5_count)
 
-    # If we didn't get aliases from the Synonyms layer, use the target query as-is
-    if not collected_aliases:
-        # Extract a basic target name from the query
-        collected_aliases = [target_query.split(" for ")[0].split(" in ")[0].strip()]
-
-    cross_queries = _generate_cross_product(collected_aliases, indication, l5_count)
     yield LayerResult(name="Modality x Target Alias", queries=cross_queries)

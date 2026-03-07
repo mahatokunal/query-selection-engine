@@ -11,6 +11,7 @@ interface RoundControlsProps {
   onStop: () => void;
   isSelecting: boolean;
   maxRounds: number;
+  onDownload?: () => void;
 }
 
 export default function RoundControls({
@@ -22,6 +23,7 @@ export default function RoundControls({
   onStop,
   isSelecting,
   maxRounds,
+  onDownload,
 }: RoundControlsProps) {
   const exploitQueries = selectedQueries.filter((q) => q.is_exploit);
   const exploreQueries = selectedQueries.filter((q) => !q.is_exploit);
@@ -88,6 +90,15 @@ export default function RoundControls({
           >
             Stop
           </button>
+          {onDownload && (
+            <button
+              onClick={onDownload}
+              className="px-3 py-1.5 border border-[#333] text-[#888] text-xs rounded-lg hover:border-[#00c277] hover:text-[#00c277] transition-colors"
+              title="Export CSV + TXT"
+            >
+              ↓ Export
+            </button>
+          )}
         </div>
       </div>
     </div>

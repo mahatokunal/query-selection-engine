@@ -3,21 +3,24 @@
 import { useState, useCallback, useMemo } from "react";
 import Header from "@/components/Header";
 import InputPanel from "@/components/InputPanel";
+import ParsedQueryForm from "@/components/ParsedQueryForm";
 import ExpansionLayers from "@/components/ExpansionLayers";
 import QueryList from "@/components/QueryList";
 import ScatterPlot from "@/components/ScatterPlot";
 import RoundControls from "@/components/RoundControls";
 import ExplanationPanel from "@/components/ExplanationPanel";
 import BiasMetricsPanel from "@/components/BiasMetricsPanel";
-import { expandQueryStream, embedQueries, selectQueries, computeMetrics } from "@/lib/api";
+import { parseQuery, expandQueryStream, embedQueries, selectQueries, computeMetrics } from "@/lib/api";
 import {
   LayerResult,
   Point2D,
   QueryState,
   SelectedQuery,
+  StructuredQuery,
 } from "@/lib/types";
+import { MetricsSnapshot, generateQueriesCSV, generateMetricsTXT, downloadFile } from "@/lib/export";
 
-type AppPhase = "input" | "expanding" | "ready" | "round" | "stopped";
+type AppPhase = "input" | "parsing" | "parsed" | "expanding" | "ready" | "round" | "stopped";
 
 const MAX_ROUNDS = 40;
 
@@ -41,6 +44,13 @@ export default function Home() {
   >([]);
   const [intraLayerDistances, setIntraLayerDistances] = useState<Record<string, number> | null>(null);
   const [distanceToNearestTried, setDistanceToNearestTried] = useState<Record<string, number> | null>(null);
+  const [metricsHistory, setMetricsHistory] = useState<MetricsSnapshot[]>([]);
+
+  // Parse-related state
+  const [structuredQuery, setStructuredQuery] = useState<StructuredQuery | null>(null);
+  const [parseWarnings, setParseWarnings] = useState<string[]>([]);
+  const [rawQuery, setRawQuery] = useState("");
+  const [selectedModel, setSelectedModel] = useState("gpt-4.1-mini");
 
   const layerDistribution = useMemo(() => {
     const dist: Record<string, number> = {};
@@ -70,7 +80,8 @@ export default function Home() {
       tried: number[],
       promising: number[],
       states: QueryState[],
-      round: number
+      round: number,
+      cumulativeLayerCounts: Record<string, number> = {}
     ) => {
       setIsSelecting(true);
       setCurrentRound(round);
@@ -79,7 +90,7 @@ export default function Home() {
       try {
         const embeddings2d = pts.map((p) => [p.x, p.y]);
         const layerList = states.map((q) => q.layer);
-        const data = await selectQueries(queries, embeddings2d, tried, promising, 5, layerList);
+        const data = await selectQueries(queries, embeddings2d, tried, promising, 5, layerList, round, cumulativeLayerCounts);
         const selected: SelectedQuery[] = data.selected;
         setCurrentSelection(selected);
 
@@ -98,7 +109,27 @@ export default function Home() {
         if (allTriedNow.length > 0) {
           const layerList = states.map((q) => q.layer);
           computeMetrics(layerList, allTriedNow, false, true)
-            .then((m) => { if (m.distance_to_nearest_tried) setDistanceToNearestTried(m.distance_to_nearest_tried); })
+            .then((m) => {
+              if (m.distance_to_nearest_tried) {
+                setDistanceToNearestTried(m.distance_to_nearest_tried);
+                // Accumulate per-round snapshot for export
+                const snapDist: Record<string, number> = {};
+                for (const sel of selected) {
+                  const state = states.find((q) => q.index === sel.index);
+                  if (state) {
+                    snapDist[state.layer] = (snapDist[state.layer] || 0) + 1;
+                  }
+                }
+                setMetricsHistory((prev) => [
+                  ...prev,
+                  {
+                    round,
+                    layerDistribution: snapDist,
+                    distanceToNearestTried: m.distance_to_nearest_tried,
+                  },
+                ]);
+              }
+            })
             .catch(console.error);
         }
       } catch (err) {
@@ -110,67 +141,90 @@ export default function Home() {
     []
   );
 
-  const handleGenerate = useCallback(
+  const handleParse = useCallback(
     async (query: string, poolSize: number, model: string) => {
-      setPhase("expanding");
-      setLayers([]);
-      setCurrentLayerIndex(0);
+      setPhase("parsing");
+      setRawQuery(query);
+      setSelectedModel(model);
       setRequestedPoolSize(poolSize);
 
       try {
-        const expandedLayers: LayerResult[] = [];
-        await expandQueryStream(query, poolSize, model, (layer) => {
-          expandedLayers.push(layer);
-          setLayers((prev) => [...prev, layer]);
-          setCurrentLayerIndex(expandedLayers.length);
-        });
-
-        const queries: string[] = [];
-        for (const layer of expandedLayers) {
-          queries.push(...layer.queries);
-        }
-        setAllQueries(queries);
-
-        const embedData = await embedQueries(queries);
-        setPoints(embedData.points);
-
-        // Build layer list for metrics
-        const layerList: string[] = [];
-        for (const layer of expandedLayers) {
-          for (let j = 0; j < layer.queries.length; j++) {
-            layerList.push(layer.name);
-          }
-        }
-
-        // Compute intra-layer distances once after embedding
-        computeMetrics(layerList, [], true, false)
-          .then((m) => { if (m.intra_layer_distances) setIntraLayerDistances(m.intra_layer_distances); })
-          .catch(console.error);
-
-        const states: QueryState[] = queries.map((q: string, i: number) => {
-          let layerName = "";
-          let count = 0;
-          for (const layer of expandedLayers) {
-            if (i < count + layer.queries.length) {
-              layerName = layer.name;
-              break;
-            }
-            count += layer.queries.length;
-          }
-          return { index: i, query: q, status: "untried" as const, layer: layerName };
-        });
-        setQueryStates(states);
-
-        setPhase("ready");
-        await runSelection(queries, embedData.points, [], [], states, 1);
+        const result = await parseQuery(query, model);
+        setStructuredQuery(result.structured);
+        setParseWarnings(result.warnings);
+        setPhase("parsed");
       } catch (err) {
         console.error(err);
+        alert(`Parse error: ${err instanceof Error ? err.message : "Unknown error"}`);
         setPhase("input");
-        alert(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
       }
     },
-    [runSelection]
+    []
   );
+
+  const handleGenerate = useCallback(async () => {
+    if (!structuredQuery) return;
+
+    setPhase("expanding");
+    setLayers([]);
+    setCurrentLayerIndex(0);
+
+    try {
+      const expandedLayers: LayerResult[] = [];
+      await expandQueryStream(rawQuery, requestedPoolSize, selectedModel, (layer) => {
+        expandedLayers.push(layer);
+        setLayers((prev) => [...prev, layer]);
+        setCurrentLayerIndex(expandedLayers.length);
+      }, structuredQuery);
+
+      const queries: string[] = [];
+      for (const layer of expandedLayers) {
+        queries.push(...layer.queries);
+      }
+      setAllQueries(queries);
+
+      const embedData = await embedQueries(queries);
+      setPoints(embedData.points);
+
+      // Build layer list for metrics
+      const layerList: string[] = [];
+      for (const layer of expandedLayers) {
+        for (let j = 0; j < layer.queries.length; j++) {
+          layerList.push(layer.name);
+        }
+      }
+
+      // Compute intra-layer distances once after embedding
+      computeMetrics(layerList, [], true, false)
+        .then((m) => { if (m.intra_layer_distances) setIntraLayerDistances(m.intra_layer_distances); })
+        .catch(console.error);
+
+      const states: QueryState[] = queries.map((q: string, i: number) => {
+        let layerName = "";
+        let count = 0;
+        for (const layer of expandedLayers) {
+          if (i < count + layer.queries.length) {
+            layerName = layer.name;
+            break;
+          }
+          count += layer.queries.length;
+        }
+        return { index: i, query: q, status: "untried" as const, layer: layerName };
+      });
+      setQueryStates(states);
+
+      setPhase("ready");
+      await runSelection(queries, embedData.points, [], [], states, 1);
+    } catch (err) {
+      console.error(err);
+      setPhase("parsed");
+      alert(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
+  }, [structuredQuery, rawQuery, requestedPoolSize, selectedModel, runSelection]);
+
+  const handleBack = useCallback(() => {
+    setPhase("input");
+  }, []);
 
   const handleTogglePromising = useCallback((index: number) => {
     setMarkedPromising((prev) => {
@@ -211,13 +265,24 @@ export default function Home() {
     });
     setQueryStates(newStates);
 
+    // Build cumulative layer selection counts from all rounds so far
+    const cumulativeCounts: Record<string, number> = { ...layerDistribution };
+    // Also include current round's selections being finalized
+    for (const sel of currentSelection) {
+      const state = queryStates.find((q) => q.index === sel.index);
+      if (state) {
+        // layerDistribution already includes currentSelection, so no double-count
+      }
+    }
+
     await runSelection(
       allQueries,
       points,
       newTried,
       newPromising,
       newStates,
-      currentRound + 1
+      currentRound + 1,
+      cumulativeCounts
     );
   }, [
     currentRound,
@@ -227,6 +292,7 @@ export default function Home() {
     allQueries,
     points,
     queryStates,
+    layerDistribution,
     runSelection,
   ]);
 
@@ -241,6 +307,24 @@ export default function Home() {
     ]);
     setPhase("stopped");
   }, [currentRound, currentSelection, markedPromising]);
+
+  const handleDownload = useCallback(() => {
+    const csv = generateQueriesCSV(queryStates);
+    downloadFile(csv, "queries_export.csv", "text/csv");
+
+    // Browsers block multiple synchronous programmatic downloads — stagger the second
+    setTimeout(() => {
+      const txt = generateMetricsTXT(
+        intraLayerDistances,
+        metricsHistory,
+        allQueries.length,
+        triedIndices.length,
+        currentRound,
+        queryStates
+      );
+      downloadFile(txt, "metrics_report.txt", "text/plain");
+    }, 100);
+  }, [queryStates, intraLayerDistances, metricsHistory, allQueries.length, triedIndices.length, currentRound]);
 
   const handleReset = useCallback(() => {
     setPhase("input");
@@ -259,29 +343,55 @@ export default function Home() {
     setRoundHistory([]);
     setIntraLayerDistances(null);
     setDistanceToNearestTried(null);
+    setMetricsHistory([]);
+    setStructuredQuery(null);
+    setParseWarnings([]);
+    setRawQuery("");
+    setSelectedModel("gpt-4.1-mini");
   }, []);
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <Header />
 
-      {(phase === "input" || phase === "expanding") && (
+      {(phase === "input" || phase === "parsing") && (
         <div className="flex-1 flex items-center justify-center p-8">
-          <div className={`w-full ${phase === "expanding" ? "max-w-lg" : "max-w-2xl"}`}>
+          <div className="w-full max-w-2xl">
             <InputPanel
-              onGenerate={handleGenerate}
-              isLoading={phase === "expanding"}
-              disabled={phase === "expanding"}
+              onParse={handleParse}
+              isParsing={phase === "parsing"}
+              disabled={phase === "parsing"}
+              initialQuery={rawQuery}
             />
-            {phase === "expanding" && (
-              <div className="mt-6">
-                <ExpansionLayers
-                  layers={layers}
-                  currentLayerIndex={currentLayerIndex}
-                  totalPoolSize={requestedPoolSize}
-                />
-              </div>
-            )}
+          </div>
+        </div>
+      )}
+
+      {phase === "parsed" && structuredQuery && (
+        <div className="flex-1 overflow-y-auto p-8">
+          <div className="w-full max-w-3xl mx-auto">
+            <ParsedQueryForm
+              structuredQuery={structuredQuery}
+              warnings={parseWarnings}
+              poolSize={requestedPoolSize}
+              onUpdate={setStructuredQuery}
+              onPoolSizeChange={setRequestedPoolSize}
+              onGenerate={handleGenerate}
+              onBack={handleBack}
+              isLoading={false}
+            />
+          </div>
+        </div>
+      )}
+
+      {phase === "expanding" && (
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="w-full max-w-lg">
+            <ExpansionLayers
+              layers={layers}
+              currentLayerIndex={currentLayerIndex}
+              totalPoolSize={requestedPoolSize}
+            />
           </div>
         </div>
       )}
@@ -332,6 +442,7 @@ export default function Home() {
                 onStop={handleStop}
                 isSelecting={isSelecting}
                 maxRounds={MAX_ROUNDS}
+                onDownload={handleDownload}
               />
             </div>
             <div className="w-[260px] shrink-0 glass-card rounded-xl p-3 overflow-y-auto max-h-[80px]">

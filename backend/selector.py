@@ -31,6 +31,43 @@ def _find_layer_medoid(
     return indices[best_local]
 
 
+def _compute_rebalancing(
+    layer_selection_counts: dict[str, int],
+    all_layer_names: list[str],
+) -> tuple[set[str], set[str]]:
+    """Compute which layers are starved (below lower bound) and oversaturated (above upper bound).
+
+    Bounds: lower = 100/(2.5*k)%, upper = (100*2.5/k)%
+    where k = number of unique layers.
+
+    Returns (starved_layers, oversaturated_layers).
+    """
+    unique_layers = sorted(set(all_layer_names))
+    k = len(unique_layers)
+    if k == 0:
+        return set(), set()
+
+    total_selections = sum(layer_selection_counts.values())
+    if total_selections == 0:
+        return set(), set()
+
+    lower_pct = 100.0 / (2.5 * k)  # e.g. 8% for k=5
+    upper_pct = 100.0 * 2.5 / k     # e.g. 50% for k=5
+
+    starved: set[str] = set()
+    oversaturated: set[str] = set()
+
+    for layer in unique_layers:
+        count = layer_selection_counts.get(layer, 0)
+        pct = (count / total_selections) * 100.0
+        if pct < lower_pct:
+            starved.add(layer)
+        elif pct > upper_pct:
+            oversaturated.add(layer)
+
+    return starved, oversaturated
+
+
 def select_queries(
     queries: list[str],
     embeddings_2d: list[list[float]],
@@ -39,6 +76,8 @@ def select_queries(
     k: int = 5,
     cached_embeddings: np.ndarray | None = None,
     layers: list[str] | None = None,
+    current_round: int = 1,
+    layer_selection_counts: dict[str, int] | None = None,
 ) -> SelectResponse:
     if cached_embeddings is not None:
         full_embeddings = cached_embeddings
@@ -112,8 +151,91 @@ def select_queries(
         # If more explore slots remain (k > num_layers), fill with farthest-first
         explore_count -= len(medoid_selections[:explore_count])
 
+    # --- Layer rebalancing: every 5 rounds after the first 5 ---
+    rebalance_slots_used = 0
+    if (
+        current_round > 5
+        and current_round % 5 == 1  # round 6, 11, 16, 21... (first round after checkpoint)
+        and layers
+        and layer_selection_counts
+        and explore_count > 0
+    ):
+        starved, oversaturated = _compute_rebalancing(
+            layer_selection_counts, list(set(layers))
+        )
+
+        if starved:
+            # Group untried by layer
+            layer_untried: dict[str, list[int]] = {}
+            for idx in untried:
+                layer_name = layers[idx] if idx < len(layers) else ""
+                layer_untried.setdefault(layer_name, []).append(idx)
+
+            # Reserve 1 slot per starved layer (up to half of explore slots)
+            max_rebalance = max(1, explore_count // 2)
+            for starved_layer in sorted(starved):
+                if rebalance_slots_used >= max_rebalance:
+                    break
+                candidates = layer_untried.get(starved_layer, [])
+                if not candidates:
+                    continue
+
+                # Pick farthest from reference within this layer
+                if reference_indices:
+                    best_idx = None
+                    best_dist = -1.0
+                    best_ref = None
+                    for idx in candidates:
+                        distances = [
+                            _cosine_distance(full_embeddings[idx], full_embeddings[ref])
+                            for ref in reference_indices
+                        ]
+                        min_dist = min(distances)
+                        nearest_ref = reference_indices[distances.index(min_dist)]
+                        if min_dist > best_dist:
+                            best_dist = min_dist
+                            best_idx = idx
+                            best_ref = nearest_ref
+                else:
+                    best_idx = candidates[0]
+                    best_dist = 0.0
+                    best_ref = None
+
+                if best_idx is not None:
+                    nearest_query = queries[best_ref] if best_ref is not None else None
+                    nearest_truncated = (
+                        (nearest_query[:60] + "...") if nearest_query and len(nearest_query) > 60 else nearest_query
+                    )
+                    selected.append(
+                        SelectedQuery(
+                            index=best_idx,
+                            query=queries[best_idx],
+                            reason=(
+                                f"Rebalance: layer '{starved_layer}' below minimum threshold. "
+                                f"Distance {best_dist:.2f} from nearest tried"
+                                f"{f' (q{best_ref}: {nearest_truncated})' if best_ref is not None else ''}."
+                            ),
+                            nearest_tried_index=best_ref,
+                            nearest_tried_query=nearest_query,
+                            distance=best_dist,
+                            is_exploit=False,
+                        )
+                    )
+                    reference_indices.append(best_idx)
+                    untried.remove(best_idx)
+                    rebalance_slots_used += 1
+
+        # For remaining farthest-first slots, exclude oversaturated layers
+        if oversaturated:
+            untried = [
+                i for i in untried
+                if (layers[i] if i < len(layers) else "") not in oversaturated
+            ]
+
+    remaining_explore = explore_count - rebalance_slots_used
+
     # --- Farthest-first traversal for remaining slots ---
-    for _ in range(min(explore_count, len(untried))):
+    for _ in range(min(remaining_explore, len(untried))):
         # Fallback: if still no reference (no layers provided, empty pool)
         if not reference_indices:
             first_idx = untried[0]

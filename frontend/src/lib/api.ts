@@ -1,6 +1,16 @@
-import { LayerResult, MetricsData } from "./types";
+import { LayerResult, MetricsData, StructuredQuery, ParseResponse } from "./types";
 
 const API_BASE = "http://localhost:8000";
+
+export async function parseQuery(rawQuery: string, model: string): Promise<ParseResponse> {
+  const res = await fetch(`${API_BASE}/api/parse`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ raw_query: rawQuery, model }),
+  });
+  if (!res.ok) throw new Error(`Parse failed: ${res.statusText}`);
+  return res.json();
+}
 
 export async function expandQuery(targetQuery: string, poolSize: number) {
   const res = await fetch(`${API_BASE}/api/expand`, {
@@ -16,12 +26,22 @@ export async function expandQueryStream(
   targetQuery: string,
   poolSize: number,
   model: string,
-  onLayer: (layer: LayerResult) => void
+  onLayer: (layer: LayerResult) => void,
+  structuredQuery?: StructuredQuery
 ): Promise<void> {
+  const body: Record<string, unknown> = {
+    target_query: targetQuery,
+    pool_size: poolSize,
+    model,
+  };
+  if (structuredQuery) {
+    body.structured_query = structuredQuery;
+  }
+
   const res = await fetch(`${API_BASE}/api/expand/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target_query: targetQuery, pool_size: poolSize, model }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Expand failed: ${res.statusText}`);
 
@@ -63,7 +83,9 @@ export async function selectQueries(
   triedIndices: number[],
   promisingIndices: number[],
   k: number = 5,
-  layers: string[] = []
+  layers: string[] = [],
+  currentRound: number = 1,
+  layerSelectionCounts: Record<string, number> = {}
 ) {
   const res = await fetch(`${API_BASE}/api/select`, {
     method: "POST",
@@ -75,6 +97,8 @@ export async function selectQueries(
       promising_indices: promisingIndices,
       k,
       layers,
+      current_round: currentRound,
+      layer_selection_counts: layerSelectionCounts,
     }),
   });
   if (!res.ok) throw new Error(`Select failed: ${res.statusText}`);
